@@ -1,13 +1,14 @@
-use std::net::SocketAddr;
-use std::convert::Infallible;
-use std::str;
-use hyper::service::{make_service_fn, service_fn};
-use hyper::{Body, Method, Request, Response, StatusCode, Server};
 use csv::Reader;
+use hyper::service::{make_service_fn, service_fn};
+use hyper::{Body, Method, Request, Response, Server, StatusCode};
+use std::convert::Infallible;
+use std::net::SocketAddr;
+use std::str;
 
 /// This is our service handler. It receives a Request, routes on its
 /// path, and returns a Future of a Response.
 async fn handle_request(req: Request<Body>) -> Result<Response<Body>, anyhow::Error> {
+    const NO_RATE: &str = "-1.0";
     match (req.method(), req.uri().path()) {
         // Serve some instructions at /
         (&Method::GET, "/") => Ok(Response::new(Body::from(
@@ -16,7 +17,7 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, anyhow::Er
 
         (&Method::POST, "/find_rate") => {
             let post_body = hyper::body::to_bytes(req.into_body()).await?;
-            let mut rate = "0.08".to_string(); // default is 8%
+            let mut rate = String::from(NO_RATE); // default is no rate
 
             let rates_data: &[u8] = include_bytes!("rates_by_zipcode.csv");
             let mut rdr = Reader::from_reader(rates_data);
@@ -28,9 +29,15 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, anyhow::Er
                     break;
                 }
             }
-
-            Ok(Response::new(Body::from(rate)))
-        }
+            match rate.as_ref() {
+              NO_RATE => {
+                        let mut not_found = Response::new(Body::from("Zip code not found"));
+                        *not_found.status_mut() = StatusCode::NOT_FOUND;
+                        Ok(not_found)
+                    },
+              _ =>  {Ok(Response::new(Body::from(rate)))}
+            }
+        },
 
         // Return the 404 Not Found for other routes.
         _ => {
@@ -44,12 +51,8 @@ async fn handle_request(req: Request<Body>) -> Result<Response<Body>, anyhow::Er
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr = SocketAddr::from(([0, 0, 0, 0], 8001));
-    let make_svc = make_service_fn(|_| {
-        async move {
-            Ok::<_, Infallible>(service_fn(move |req| {
-                handle_request(req)
-            }))
-        }
+    let make_svc = make_service_fn(|_| async move {
+        Ok::<_, Infallible>(service_fn(move |req| handle_request(req)))
     });
     let server = Server::bind(&addr).serve(make_svc);
     dbg!("Server started on port 8001");
